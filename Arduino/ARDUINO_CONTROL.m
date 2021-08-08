@@ -1,88 +1,113 @@
+%---------------------------------------------------------------------------
+%
+% This code is modified based on the old version from yuanhui's init_qOAS4
+% by ge zhang. It is used to generate an object that control the Arduino Uno board.
+% The whole procedure inluces initializing the board to create a board
+% handle(if connected to a servo motor, also initializing a servo handle),
+% selecting the range of light, choosing the proper filter. Also the
+% Arduino Uno board can be uesed to control the opening and closing of the
+% Oceanid or Thorlabs shutter.
+%
+%
+%%
 classdef ARDUINO_CONTROL < handle
     
-    properties 
+    properties
+        % this properity is about the adopted light range and filter type,
+        % it can be a visible light(VIS) or near infrared(NIR). The filter
+        % can be a longpass(LP) or shortpass(SP) filter.
+       
         light_range;
         filter_mode;
     end
-    
+
     properties
-        posOfNIR = 0.72;
+        % this properties define the position of the filter while according
+        % to the corresponding filter type.
+        posOfNIR = 0.72; % position of the NIR 
         posOfVIS = 0.13;
-        posOfLP = 0;
+        posOfLP = 0;     % position of the Longpass for the filter wheel.
         posOfSP = 0.66;
-        posOfBLK = 0.33;
+        posOfBLK = 0.33; % position of blocking for the filter wheel
     end
     
     properties
-        s_VISNIR;
-        s_LPSP;
-        shutter_handle
-        filter_handle
-        pin;
-        pin0;
+        pin; % the pin on Uno board that used for data communication when 
+        pin0;% performing the closing or opening of shutter
+        
     end
     
-    methods ( Access = public, Static = true ) 
+    methods
         function obj = ARDUINO_CONTROL()
-            obj.light_range = 'VIS';
-            obj.filter_mode = 'BLK';
+            obj.light_range = 'VIS'; %default : visible light
+            obj.filter_mode = 'BLK'; %default : block light from getting through
         end
        
-        function filter_arduino_connect(obj) 
+        function [s_LPSP,s_VISNIR,filter_handle] = filter_arduino_connect(obj)
+            global filter_handle
+            global s_LPSP
+            global s_VISNIR
+            
             try
-                obj.filter_handle = arduino('com4', 'uno', 'Libraries', 'Servo');
+                filter_handle = arduino('com4', 'uno', 'Libraries', 'Servo'); %creat a filter handle for next use. Port name subjects to change.
             catch ME
-                display(['obj.filter_arduino' ME.message]);
+                display(['filter_arduino' ME.message]);
             end
-            obj.s_LPSP = servo(obj.filter_handle, 'D4', 'MinPulseDuration', 371*10^-6, 'MaxPulseDuration',1125*10^-6);
-            obj.s_VISNIR = servo(obj.filter_handle, 'D8', 'MinPulseDuration', 375*10^-6, 'MaxPulseDuration',1125*10^-6);
-            disp('filter arduino connected')
+            pause(1);
+            s_LPSP = servo(filter_handle, 'D4', 'MinPulseDuration', 371*10^-6, 'MaxPulseDuration',1125*10^-6); %servo handle for filter
+            s_VISNIR = servo(filter_handle, 'D8', 'MinPulseDuration', 375*10^-6, 'MaxPulseDuration',1125*10^-6); %servo handle for light range
+            disp('filter arduino connected.')
+            pause(2);
         end
         
-        function shutter_arduino_connect(obj)
+        function shutter_handle = shutter_arduino_connect(obj)
+            global shutter_handle
+            
             try
-               obj.shutter_handle = arduino('COM3','Uno');
+               shutter_handle = arduino('COM3','Uno'); %creat a shutter handle for next use. Port name subjects to change.
             catch ME
-                display(['obj.shutter_handle ' ME.message]);
+                display(['shutter_handle ' ME.message]);
             end
-            disp('shutter arduino connected')
+            disp('shutter arduino connected.')
         end
         
-        function VIS_NIR_Select(obj, Position)
-            current_position = readPosition(obj.s_VISNIR);
+        function VIS_NIR_Select(obj, Position, s_VISNIR) 
+            global s_VISNIR
+            current_position = readPosition(s_VISNIR);
             switch Position
                 case {'NIR','nir'}
                     if current_position ~= obj.posOfNIR
-                        writePosition(obj.s_VISNIR, obj.posOfNIR);
+                        writePosition(s_VISNIR, obj.posOfNIR);
                     end
                 otherwise
-                    if current_position ~=  obj.posOfVIR
-                        writePosition(obj.s_VISNIR, obj.posOfVIR);
+                    if current_position ~=  obj.posOfVIS
+                        writePosition(s_VISNIR, obj.posOfVIS);
                     end
             end
         end
         
-        function LPSP_FilterSelect(obj, Position)
-            current_position = readPosition(obj.s_LPSP);
+        function LPSP_FilterSelect(obj, Position, s_LPSP)
+            global s_LPSP
+            current_position = readPosition(s_LPSP);
             switch Position
                 case {'LP';'lp';'NIR';'nir'}
                     if current_position ~=  obj.posOfLP
-                        writePosition(obj.s_LPSP, obj.posOfLP);
+                        writePosition(s_LPSP, obj.posOfLP);
                     end
                 case {'Block';'block';'BLK';'blk'}
                     if current_position ~=  obj.posOfBLK
-                        writePosition(obj.s_LPSP, obj.posOfBLK);
+                        writePosition(s_LPSP, obj.posOfBLK);
                     end
                 case {'SP';'sp';'VIS';'vis'}
                     if current_position ~=  obj.posOfSP
-                        writePosition(obj.s_LPSP, obj.posOfSP);
+                        writePosition(s_LPSP, obj.posOfSP);
                     end
                 otherwise
-                    writePosition(obj.s_LPSP, 1);
+                    writePosition(s_LPSP, 1);
             end
         end
         
-        function Close_Shutter(obj, Shutter_Name)
+        function close_shutter(obj, Shutter_Name, shutter_handle)
              switch Shutter_Name
                  case 'Thorlabs_LaserShutter'
                      obj.pin='D8';
@@ -91,13 +116,13 @@ classdef ARDUINO_CONTROL < handle
                      obj.pin='D7';
                      obj.pin0='D6';
              end
-             state = 0;
+             state = 0;  % state for closed shutter
              state0 = 0;
-             writeDigitalPin(obj.shutter_handle, obj.pin0, state0);
-             writeDigitalPin(obj.shutter_handle, obj.pin, state);
+             writeDigitalPin(shutter_handle, obj.pin0, state0);
+             writeDigitalPin(shutter_handle, obj.pin, state);
         end
         
-        function Open_Shutter(obj, Shutter_Name)
+        function open_shutter(obj, Shutter_Name, shutter_handle)
             switch Shutter_Name
                  case 'Thorlabs_LaserShutter'
                      obj.pin='D8';
@@ -106,10 +131,12 @@ classdef ARDUINO_CONTROL < handle
                      obj.pin='D7';
                      obj.pin0='D6';
              end
-             state = 1;
+             state = 1;  % state for open shutter
              state0 = 0;
-             writeDigitalPin(obj.shutter_handle, obj.pin0, state0);
-             writeDigitalPin(obj.shutter_handle, obj.pin, state);
+             writeDigitalPin(shutter_handle, obj.pin0, state0);
+             writeDigitalPin(shutter_handle, obj.pin, state);
         end
+        
+        
     end
 end
