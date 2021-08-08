@@ -107,6 +107,14 @@ classdef ARDUINO_CONTROL < handle
             end
         end
         
+        function servo_init(s_VISNIR, s_LPSP)
+            VIS_NIR_Select(s_VISNIR , 'VIS');
+            LPSP_FilterSelect (s_LPSP, 'VIS');
+            LPSP_FilterSelect (s_LPSP, 'BLK');
+            disp('FILTER ARDUINO init ');
+            pause(2);
+        end
+        
         function close_shutter(obj, Shutter_Name, shutter_handle)
              switch Shutter_Name
                  case 'Thorlabs_LaserShutter'
