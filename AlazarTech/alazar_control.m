@@ -1,71 +1,83 @@
 classdef alazar_control < handle
     properties
+        % board configuration setting
         system_ID;
         board_ID;
         clock;
+        clock_edge;
+        channelsPerBoard;
         sample_rate;
-        samplesPerSec
-        Clock_Edge;
-        channelMask; % Channel A transfer the acquried data
-        input_range_triger;
-        input_range_signal;%
+        samplesPerSec;
+        channelMask; % transmit signal, connected to channel A 
+        input_range_triger; % input range of the channel A/1
+        input_range_signal; % input range of the channel B/2
         coupling;
         impedance;
+        
     end
     
     properties
+        % setting for the data acquisition
+        preTriggerSamples;
+        postTriggerSamples;
         recordsPerBuffer;
-        recordsPerAcquisition;
-        flag;
+        recordsPerAcquisition; %0x7FFFFFFF is streaming mode
+        buffersPerAcquisition; 
+        bufferCount;
+        admaFlags;
+        saveData;
+        drawData;
     end
     
     properties
         Trigger_OP;
-        Trigger_Engine;
+        Trigger_Engine_1;
+        Trigger_Engine_2;
         Triger_channel; % Channel B is for triggering
         Trigger_Slope;
         Trigger_Level;
         Trigger_Timeout;
         Trigger_Delay
+        Trigger_Disable
         Aux_mode;
     end
     
-    properties
-        preTriggerSamples;
-        postTriggerSamples;
-        recordsPerBuffer;
-        buffersPerAcquisition;
-        saveData;
-        drawData;
-        channelsPerBoard;
-    end
     methods 
         function obj = alazar_control()
+           AlazarDefs
+           alazarLoadLibrary();
            obj.system_ID = int32(1);
            obj.board_ID = int32(1);
            obj.channelsPerBoard = 2;
            obj.clock = INTERNAL_CLOCK;
            obj.sample_rate = SAMPLE_RATE_125MSPS;
-           obj.samplesPerSec = 32768;
-           obj.Clock_Edge = CLOCK_EDGE_RISING;
+           obj.samplesPerSec = 125000000.0;
+           obj.clock_edge = CLOCK_EDGE_RISING;
            obj.channelMask = CHANNEL_A;
            obj.input_range_triger = INPUT_RANGE_PM_4_V; % range +- 4V
            obj.input_range_signal = INPUT_RANGE_PM_80_MV; % signal range +-80mV
            obj.coupling = DC_COUPLING;
            obj.impedance = IMPEDANCE_50_OHM; 
            obj.Trigger_OP = TRIG_ENGINE_OP_J;
-           obj.Trigger_Engine = TRIG_ENGINE_J; % Engine J for channel B
+           obj.Trigger_Engine_1 = TRIG_ENGINE_J;
+           obj.Trigger_Engine_2 = TRIG_ENGINE_K;
+           obj.Trigger_Disable = TRIG_DISABLE;% Engine J for channel B
            obj.Triger_channel = TRIG_CHAN_B;
            obj.Trigger_Slope = TRIGGER_SLOPE_POSITIVE; % Rising slope 
            obj.Trigger_Level = 10; %  10% or 376.5 mV as the trigger level
            obj.Trigger_Timeout = 0;
            obj.Trigger_Delay = 0; %7.7 µs
-           obj.preTriggerSamples = 3264; 
-           obj.postTriggerSamples = obj.samplesPerSec - obj.preTriggerSamples;
+           obj.preTriggerSamples = 3264;
+           obj.postTriggerSamples = 32768 - obj.preTriggerSamples;
            %obj.Aux_mode = AUX_OUT_TRIGGER;
-           %recordsPerBuffer = 1;
-           %obj.recordsPerAcquisition = 0x7FFFFFFF;
-           obj.flags = ADMA_TRADITIONAL_MODE || ADMA_ENABLE_RECORD_HEADERS;
+           obj.recordsPerBuffer = 1;  % Specifiy the total number of buffers to capture
+           obj.buffersPerAcquisition = 10;
+           obj.recordsPerAcquisition = 0x7FFFFFFF;
+           obj.channelsPerBoard = 2;
+           obj.bufferCount = uint32(4);  % the number of DMA buffers to allocate. greater than 2 for DMA
+           obj.saveData = false;
+           obj.drawData = false;
+           obj.admaFlags = ADMA_EXTERNAL_STARTCAPTURE + ADMA_TRADITIONAL_MODE;
         end
         
         function boardHandle = alazar_init(obj)
@@ -73,53 +85,48 @@ classdef alazar_control < handle
             alazarLoadLibrary() % Load driver library
             boardHandle = AlazarGetBoardBySystemID(obj.system_ID,obj.board_ID); %creat a handle for the board
             boardName = AlazarGetBoardKind(boardHandle);
-            disp('AlazarTech Card %s init\n',boardName);
+            info = sprintf('AlazarTech Card %s init\n', boardName);
+            disp(info);
         end
     end
     
     methods
         % Configure the board: 1. timebase, 2. analog inputs, and 3. trigger system settings 
         function configureBoard(obj, boardHandle)
-            AlazarSetCaptureClock(obj, ...
-                                  boardHandle, ...
-                                  obj.Clock_Source, ...
-                                  obj.Sample_Rate, ...
-                                  obj.Clock_Edge, ...
+            AlazarSetCaptureClock(boardHandle, ...
+                                  obj.clock, ...
+                                  obj.sample_rate, ...
+                                  obj.clock_edge, ...
                                   0);
                               
         % Select channel A input parameters as required.
-            AlazarInputControlEx(obj, ...
-                                 boardHandle, ...
+            AlazarInputControlEx(boardHandle, ...
                                  obj.channelMask, ...
                                  obj.coupling, ...
                                  obj.input_range_signal, ...
                                  obj.impedance);
                           
         % Select channel A bandwidth limit as required
-            AlazarSetBWLimit(obj, ...
-                             boardHandle, ...
+            AlazarSetBWLimit(boardHandle, ...
                              obj.channelMask, ...
                              0); % no bandwidt limit (full)
                          
         % Select channel B input parameters as required.
-            AlazarInputControlEx(obj, ...
-                                 boardHandle, ...
-                                 obj.channelTriger, ...
+            AlazarInputControlEx(boardHandle, ...
+                                 obj.Triger_channel, ...
                                  obj.coupling, ...
                                  obj.input_range_triger, ...
                                  obj.impedance); 
                           
         % Select channel B bandwidth limit as required
-            AlazarSetBWLimit(obj, ...
-                             boardHandle, ...
-                             obj.Trigger_Source, ...
+            AlazarSetBWLimit(boardHandle, ...
+                             obj.Triger_channel, ...
                              0); % no bandwidt limit (full)
                         
         % Select trigger inputs and levels as required
-            AlazarSetTriggerOperation(obj, ...
-                                      boardHandle, ...
+            AlazarSetTriggerOperation(boardHandle, ...
                                       obj.Trigger_OP, ...
-                                      obj.Trigger_Engine, ...
+                                      obj.Trigger_Engine_1, ...
                                       obj.Triger_channel, ...
                                       obj.Trigger_Slope, ...
                                       obj.Trigger_Level);
@@ -140,71 +147,63 @@ classdef alazar_control < handle
         end
     
         function Acquire_Data(obj, boardHandle)
-            AlazarDefs
+            AlazarDefs        
             % Calculate the number of enabled channels from the channel mask
-            channelCount = 0;
-            for channel = 0:channelsPerBoard - 1
+            channelCount = 0;  
+            for channel = 0 : obj.channelsPerBoard - 1
                 channelId = 2^channel;
                 if bitand(channelId, obj.channelMask)
                     channelCount = channelCount + 1;
                 end
             end
 
-            if (channelCount < 1) || (channelCount > channelsPerBoard)
-                fprintf('Error: Invalid channel mask %08X\n', channelMask);
+            if (channelCount < 1) || (channelCount > obj.channelsPerBoard)
+                fprintf('Error: Invalid channel mask %08X\n', obj.channelMask);
                 return
-            end
-
+            end            
+            
             % Get the sample and memory size
-            [~, bitsPerSample] = AlazarGetChannelInfo(boardHandle);
+            [~, obj.bitsPerSample] = AlazarGetChannelInfo(boardHandle);
 
             % Calculate the size of each buffer in bytes
-            bytesPerSample = floor((double(bitsPerSample) + 7) / double(8));
-            samplesPerRecord = obj.preTriggerSamples + obj.postTriggerSamples;
-            samplesPerBuffer = samplesPerRecord * obj.recordsPerBuffer * channelCount;
-            bytesPerBuffer = bytesPerSample * samplesPerBuffer;
-
-            % Select the number of DMA buffers to allocate.
-            % The number of DMA buffers must be greater than 2 to allow a board to DMA into
-            % one buffer while, at the same time, your application processes another buffer.
-            bufferCount = uint32(4);
+            obj.bytesPerSample = floor((double(obj.bitsPerSample) + 7) / double(8));
+            obj.samplesPerRecord = obj.preTriggerSamples + obj.postTriggerSamples;
+            obj.samplesPerBuffer = obj.samplesPerRecord * obj.recordsPerBuffer * channelCount;
+            obj.bytesPerBuffer = obj.bytesPerSample * obj.samplesPerBuffer;
 
             % Create an array of DMA buffers
-            buffers = cell(1, bufferCount);
-            for j = 1 : bufferCount
-                pbuffer = AlazarAllocBuffer(boardHandle, bytesPerBuffer);
+            buffers = cell(1, obj.bufferCount);
+            for j = 1 : obj.bufferCount
+                pbuffer = AlazarAllocBuffer(boardHandle, obj.bytesPerBuffer);
                 buffers(1, j) = { pbuffer };
             end
 
             % Create a data file if required
             fid = -1;
-            if saveData
+            if obj.saveData
                 fid = fopen('data.bin', 'w');
                 if fid == -1
                     fprintf('Error: Unable to create data file\n');
                 end
             end
             % Set the record size
-            AlazarSetRecordSize(boardHandle, preTriggerSamples, postTriggerSamples);
-
-            % TODO: Select AutoDMA flags as required
-            admaFlags = ADMA_EXTERNAL_STARTCAPTURE + ADMA_TRADITIONAL_MODE;
+            AlazarSetRecordSize(boardHandle, obj.preTriggerSamples, obj.postTriggerSamples);
 
             % Configure the board to make an AutoDMA acquisition
-            recordsPerAcquisition = recordsPerBuffer * buffersPerAcquisition;
-            AlazarBeforeAsyncRead(boardHandle, channelMask, -int32(preTriggerSamples), samplesPerRecord, recordsPerBuffer, recordsPerAcquisition, admaFlags);
+            obj.recordsPerAcquisition = obj.recordsPerBuffer * obj.buffersPerAcquisition;
+            AlazarBeforeAsyncRead(boardHandle, obj.channelMask, -int32(obj.preTriggerSamples), obj.samplesPerRecord, obj.recordsPerBuffer, obj.recordsPerAcquisition, obj.admaFlags);
 
             % Post the buffers to the board
-            for bufferIndex = 1 : bufferCount
+            for bufferIndex = 1 : obj.bufferCount
                 pbuffer = buffers{1, bufferIndex};
-                AlazarPostAsyncBuffer(boardHandle, pbuffer, bytesPerBuffer);
+                AlazarPostAsyncBuffer(boardHandle, pbuffer, obj.bytesPerBuffer);
             end
 
             % Update status
-            if buffersPerAcquisition == hex2dec('7FFFFFFF')
+            if obj.buffersPerAcquisition == hex2dec('7FFFFFFF')
                 fprintf('Capturing buffers until aborted...\n');
             else
-                fprintf('Capturing %u buffers ...\n', buffersPerAcquisition);
+                fprintf('Capturing %u buffers ...\n', obj.buffersPerAcquisition);
             end
 
             % Arm the board system to wait for triggers
@@ -227,7 +226,7 @@ classdef alazar_control < handle
 
             while ~captureDone
                 try
-                    bufferIndex = mod(buffersCompleted, bufferCount) + 1;
+                    bufferIndex = mod(buffersCompleted, obj.bufferCount) + 1;
                     pbuffer = buffers{1, bufferIndex};
 
                     % Wait for the first available buffer to be filled by the board
@@ -254,10 +253,10 @@ classdef alazar_control < handle
                     % - a sample code of 0x8000 represents a ~0V signal.
                     % - a sample code of 0xFFFF represents a positive full scale input signal.
 
-                    if bytesPerSample == 1
-                        setdatatype(pbuffer, 'uint8Ptr', 1, samplesPerBuffer);
+                    if obj.bytesPerSample == 1
+                        setdatatype(pbuffer, 'uint8Ptr', 1, obj.samplesPerBuffer);
                     else
-                        setdatatype(pbuffer, 'uint16Ptr', 1, samplesPerBuffer);
+                        setdatatype(pbuffer, 'uint16Ptr', 1, obj.samplesPerBuffer);
                     end
 
                     % Save the buffer to file
@@ -273,22 +272,22 @@ classdef alazar_control < handle
                     end
 
                     % Display the buffer on screen
-                    if drawData
+                    if obj.drawData
                         plot(pbuffer.Value);
                     end
 
                     % Make the buffer available to be filled again by the board
-                    AlazarPostAsyncBuffer(boardHandle, pbuffer, bytesPerBuffer);
+                    AlazarPostAsyncBuffer(boardHandle, pbuffer, obj.bytesPerBuffer);
 
                     % Update progress
                     buffersCompleted = buffersCompleted + 1;
-                    if buffersCompleted >= buffersPerAcquisition
+                    if buffersCompleted >= obj.buffersPerAcquisition
                         captureDone = true;
                     elseif toc(updateTickCount) > updateInterval_sec
                         updateTickCount = tic;
 
                         % Update waitbar progress
-                        waitbar(double(buffersCompleted) / double(buffersPerAcquisition), ...
+                        waitbar(double(buffersCompleted) / double(obj.buffersPerAcquisition), ...
                                 waitbarHandle, ...
                                 sprintf('Completed %u buffers', buffersCompleted));
 
@@ -318,7 +317,7 @@ classdef alazar_control < handle
             end
 
             % Release the buffers
-            for bufferIndex = 1:bufferCount
+            for bufferIndex = 1:obj.bufferCount
                 pbuffer = buffers{1, bufferIndex};
                 AlazarFreeBuffer(boardHandle, pbuffer);
                 clear pbuffer;
@@ -327,7 +326,7 @@ classdef alazar_control < handle
             % Display results
             if buffersCompleted > 0
                 bytesTransferred = double(buffersCompleted) * double(bytesPerBuffer);
-                recordsTransferred = recordsPerBuffer * buffersCompleted;
+                recordsTransferred = obj.recordsPerBuffer * buffersCompleted;
 
                 if transferTime_sec > 0
                     buffersPerSec = buffersCompleted / transferTime_sec;
